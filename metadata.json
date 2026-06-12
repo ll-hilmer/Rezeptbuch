@@ -1,0 +1,6 @@
+{
+  "name": "Rezeptbuch",
+  "description": "Eine umfassende Rezeptverwaltung mit Wochenplaner, Einkaufsliste und intelligenter Zutatensuche.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

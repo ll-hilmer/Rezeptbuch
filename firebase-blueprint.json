@@ -1,0 +1,118 @@
+{
+  "entities": {
+    "Recipe": {
+      "title": "Recipe",
+      "description": "A recipe with its properties and planning information.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name of the recipe."
+        },
+        "rating": {
+          "type": "number",
+          "description": "Rating from 1 to 5."
+        },
+        "carbs": {
+          "type": "array",
+          "description": "Selected carb sources (e.g., Kartoffeln, Reis, Nudeln)."
+        },
+        "type": {
+          "type": "array",
+          "description": "Selected recipe categories (e.g., Vegetarisch, Fleisch)."
+        },
+        "method": {
+          "type": "array",
+          "description": "Cooking methods (e.g., Pfanne, Ofen, Thermomix)."
+        },
+        "ingredients": {
+          "type": "array",
+          "description": "List of ingredients."
+        },
+        "steps": {
+          "type": "array",
+          "description": "Step by step cooking instructions with optional durations."
+        },
+        "description": {
+          "type": "string",
+          "description": "Preparation instructions."
+        },
+        "originalLink": {
+          "type": "string",
+          "format": "uri",
+          "description": "Link to the original recipe."
+        },
+        "images": {
+          "type": "array",
+          "description": "List of image URLs."
+        },
+        "plannedDates": {
+          "type": "array",
+          "description": "Dates when this recipe is planned to be cooked."
+        },
+        "userId": {
+          "type": "string",
+          "description": "The owner of the recipe."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        }
+      },
+      "required": ["name", "userId", "createdAt"]
+    },
+    "ShoppingList": {
+      "title": "Shopping List",
+      "description": "A user's shopping list.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The owner of the list."
+        },
+        "items": {
+          "type": "array",
+          "description": "List of items to buy."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": ["userId"]
+    },
+    "PantryItem": {
+      "title": "Pantry Item",
+      "description": "An item in the user's pantry.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "amount": { "type": "string" },
+        "unit": { "type": "string" },
+        "expiryDate": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["name", "userId"]
+    }
+  },
+  "firestore": {
+    "/recipes/{recipeId}": {
+      "schema": "Recipe",
+      "description": "Collection of recipes."
+    },
+    "/shoppingLists/{userId}": {
+      "schema": "ShoppingList",
+      "description": "Each user has one shopping list document."
+    },
+    "/pantry/{itemId}": {
+      "schema": "PantryItem",
+      "description": "Collection of pantry items."
+    },
+    "/ingredientIcons/{iconId}": {
+      "schema": "IngredientIcon",
+      "description": "Global or user-specific icon mappings."
+    }
+  }
+}

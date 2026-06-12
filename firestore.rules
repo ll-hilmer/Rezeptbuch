@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validations ---
+
+    function isValidRecipe(data) {
+      return data.userId == request.auth.uid
+        && data.name is string && data.name.size() > 0;
+    }
+
+    function isValidShoppingList(data) {
+      return data.userId == request.auth.uid;
+    }
+
+    // --- Rules ---
+    match /recipes/{recipeId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      allow create: if isSignedIn() 
+        && isValidRecipe(request.resource.data)
+        && request.resource.data.createdAt != null;
+        
+      allow update: if isSignedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == request.auth.uid
+        && isValidRecipe(request.resource.data);
+
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /shoppingLists/{userId} {
+      allow read: if isOwner(userId);
+      
+      allow write: if isOwner(userId)
+        && isValidShoppingList(incoming());
+    }
+
+    match /pantry/{itemId} {
+      allow read, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /ingredientIcons/{iconId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn(); // In a real app this might be admin-only, but for this POC we allow users to contribute labels
+    }
+  }
+}
