@@ -6,9 +6,7 @@ import { RecipeService } from '../services/RecipeService';
 import { RecipeType, Ingredient } from '../types';
 import { Plus, Trash2, Save, X, ImageIcon, Star, Clock, Calendar as CalendarIcon, Info, Utensils, Sparkles, Flame, Wheat, Disc, Cloud, Wind } from 'lucide-react';
 import { motion } from 'motion/react';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
-import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
+import { compressImage } from '../lib/images';
 import { getIngredientIcon, useIngredientIcons } from '../lib/ingredient-icons';
 import RichTextEditor from './RichTextEditor';
 import { Controller } from 'react-hook-form';
@@ -140,9 +138,8 @@ export default function RecipeEditor({ recipeId, onSaved }: RecipeEditorProps) {
       setFetching(true);
       const fetchRecipe = async () => {
         try {
-          const docSnap = await getDoc(doc(db, 'recipes', recipeId));
-          if (docSnap.exists()) {
-            const data = docSnap.data();
+          const data: any = await RecipeService.getRecipe(recipeId);
+          if (data) {
             reset({
               rating: 0,
               status: 'Neu',
@@ -165,7 +162,7 @@ export default function RecipeEditor({ recipeId, onSaved }: RecipeEditorProps) {
             } as any);
           }
         } catch (error) {
-          handleFirestoreError(error, OperationType.GET, `recipes/${recipeId}`);
+          console.error('Rezept konnte nicht geladen werden:', error);
         } finally {
           setFetching(false);
         }
@@ -281,18 +278,11 @@ export default function RecipeEditor({ recipeId, onSaved }: RecipeEditorProps) {
   const handleLocalUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 800000) { // Limit roughly to avoid Firestore doc limit (1MB)
-        alert('Das Bild ist zu groß (max. 800KB empfohlen)');
-        return;
-      }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64String = reader.result as string;
+      compressImage(file).then((dataUrl) => {
         if (images.length < 10) {
-          setValue('images', [...images, base64String]);
+          setValue('images', [...images, dataUrl]);
         }
-      };
-      reader.readAsDataURL(file);
+      });
     }
   };
 
@@ -803,14 +793,11 @@ export default function RecipeEditor({ recipeId, onSaved }: RecipeEditorProps) {
                           onChange={(e) => {
                             const file = e.target.files?.[0];
                             if (file) {
-                              const reader = new FileReader();
-                              reader.onloadend = () => {
-                                const base64 = reader.result as string;
+                              compressImage(file).then((dataUrl) => {
                                 const current = [...images];
-                                current[0] = base64;
+                                current[0] = dataUrl;
                                 setValue('images', current);
-                              };
-                              reader.readAsDataURL(file);
+                              });
                             }
                           }}
                           className="hidden"
@@ -862,14 +849,11 @@ export default function RecipeEditor({ recipeId, onSaved }: RecipeEditorProps) {
                           onChange={(e) => {
                             const file = e.target.files?.[0];
                             if (file) {
-                              const reader = new FileReader();
-                              reader.onloadend = () => {
-                                const base64 = reader.result as string;
+                              compressImage(file).then((dataUrl) => {
                                 const current = [...images];
-                                current[1] = base64;
+                                current[1] = dataUrl;
                                 setValue('images', current);
-                              };
-                              reader.readAsDataURL(file);
+                              });
                             }
                           }}
                           className="hidden"

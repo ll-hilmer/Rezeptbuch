@@ -1,19 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { ChefHat, ListTodo, Calendar, Plus, Library, LogOut, Package } from 'lucide-react';
-import { logout } from './lib/firebase';
+import { ChefHat, ListTodo, Calendar, Plus, Library, Package, Settings } from 'lucide-react';
 import RecipeList from './components/RecipeList';
 import RecipeEditor from './components/RecipeEditor';
 import ShoppingListView from './components/ShoppingListView';
 import MealPlanView from './components/MealPlanView';
 import PantryView from './components/PantryView';
 import RecipeDetail from './components/RecipeDetail';
-import AuthGuard from './components/AuthGuard';
+import SettingsView from './components/SettingsView';
 import CookingMode from './components/CookingMode';
 import { Recipe } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { RecipeService } from './services/RecipeService';
+import { IngredientIconsProvider } from './lib/ingredient-icons';
 
-type View = 'recipes' | 'planner' | 'shopping' | 'add' | 'pantry';
+type View = 'recipes' | 'planner' | 'shopping' | 'add' | 'pantry' | 'settings';
 
 export default function App() {
   const [activeView, setActiveView] = useState<View>('recipes');
@@ -47,7 +47,7 @@ export default function App() {
   };
 
   return (
-    <AuthGuard>
+    <IngredientIconsProvider>
       <div className="min-h-screen bg-natural-bg text-natural-text pb-20 md:pb-0 md:pl-24">
         {/* Sidebar / Desktop Nav */}
         <aside className="hidden md:flex flex-col fixed left-0 top-0 bottom-0 w-24 bg-natural-primary flex flex-col items-center py-8 gap-10 text-natural-bg">
@@ -88,14 +88,14 @@ export default function App() {
             />
           </nav>
 
-          <button 
-            onClick={logout}
-            className="mt-auto p-3 opacity-60 hover:opacity-100 transition-opacity"
-            id="logout-button"
-            title="Abmelden"
-          >
-            <LogOut className="w-6 h-6" />
-          </button>
+          <div className="mt-auto">
+            <SidebarIcon 
+              active={activeView === 'settings'} 
+              onClick={() => setActiveView('settings')}
+              icon={<Settings className="w-6 h-6" />}
+              label="Einstellungen"
+            />
+          </div>
         </aside>
 
         {/* Header Mobile */}
@@ -104,8 +104,8 @@ export default function App() {
             <ChefHat className="w-6 h-6 text-natural-primary" />
             <h1 className="font-serif font-bold italic text-natural-primary">Rezeptbuch</h1>
           </div>
-          <button onClick={logout} className="text-natural-accent" id="mobile-logout">
-            <LogOut className="w-5 h-5" />
+          <button onClick={() => setActiveView('settings')} className="text-natural-accent" id="mobile-settings" title="Einstellungen">
+            <Settings className="w-5 h-5" />
           </button>
         </header>
 
@@ -134,6 +134,7 @@ export default function App() {
               {activeView === 'shopping' && <ShoppingListView />}
               {activeView === 'pantry' && <PantryView />}
               {activeView === 'add' && <RecipeEditor recipeId={editingRecipeId} onSaved={handleSaved} />}
+              {activeView === 'settings' && <SettingsView />}
             </motion.div>
           </AnimatePresence>
 
@@ -179,7 +180,7 @@ export default function App() {
           <MobileNavItem active={activeView === 'pantry'} onClick={() => setActiveView('pantry')} icon={<Package className="w-6 h-6" />} label="Vorrat" />
         </nav>
       </div>
-    </AuthGuard>
+    </IngredientIconsProvider>
   );
 }
 

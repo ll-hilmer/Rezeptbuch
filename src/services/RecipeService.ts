@@ -1,36 +1,57 @@
-import { 
-  collection, 
-  doc, 
-  getDoc, 
-  getDocs, 
-  addDoc, 
-  setDoc, 
-  updateDoc, 
-  deleteDoc, 
-  query, 
-  where, 
-  orderBy, 
-  serverTimestamp,
-  arrayUnion,
-  onSnapshot
-} from 'firebase/firestore';
-import { db, auth } from '../lib/firebase';
-import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
-import { Recipe, ShoppingList, ShoppingListItem, PantryItem } from '../types';
-import { GoogleGenAI, Type } from "@google/genai";
+import { liveQuery } from 'dexie';
+import { db, newId, getSetting, SHOPPING_LIST_ID } from '../lib/db';
+import { Recipe, ShoppingList, ShoppingListItem, PantryItem, IconMapping } from '../types';
 
-const RECIPES_COL = 'recipes';
-const SHOPPING_LISTS_COL = 'shoppingLists';
-const PANTRY_COL = 'pantry';
+export const GEMINI_KEY_SETTING = 'geminiApiKey';
+
+const ALLOWED_RECIPE_FIELDS = [
+  'name', 'description', 'prepTime', 'calories',
+  'nutritionalProtein', 'nutritionalCarbs', 'nutritionalFat',
+  'type', 'method', 'ingredients', 'steps', 'images', 'status',
+  'rating', 'plannedDates', 'originalLink', 'difficulty', 'carbs'
+];
+const NUMERIC_RECIPE_FIELDS = ['prepTime', 'calories', 'nutritionalProtein', 'nutritionalCarbs', 'nutritionalFat', 'rating'];
+
+function sanitizeRecipe(recipe: Partial<Recipe>): Partial<Recipe> {
+  const cleanData: any = {};
+  Object.entries(recipe).forEach(([key, value]) => {
+    if (ALLOWED_RECIPE_FIELDS.includes(key) && value !== undefined && value !== null) {
+      if (NUMERIC_RECIPE_FIELDS.includes(key)) {
+        cleanData[key] = Number(value) || 0;
+      } else if (Array.isArray(value)) {
+        cleanData[key] = [...value];
+      } else {
+        cleanData[key] = value;
+      }
+    }
+  });
+  return cleanData;
+}
+
+function subscribe<T>(query: () => Promise<T>, callback: (value: T) => void) {
+  const subscription = liveQuery(query).subscribe({
+    next: callback,
+    error: (error) => console.error('Datenbankfehler:', error),
+  });
+  return () => subscription.unsubscribe();
+}
+
+const emptyShoppingList = (): ShoppingList => ({ items: [], updatedAt: null });
 
 export const RecipeService = {
   async extractRecipeWithAI(text: string): Promise<Partial<Recipe>> {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    
+    const apiKey = await getSetting<string>(GEMINI_KEY_SETTING);
+    if (!apiKey) {
+      throw new Error('Kein Gemini API-Key hinterlegt. Bitte in den Einstellungen eintragen.');
+    }
+    // Erst bei Bedarf laden, damit die App schneller startet
+    const { GoogleGenAI, Type } = await import('@google/genai');
+    const ai = new GoogleGenAI({ apiKey });
+
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Extrahiere alle Rezeptdetails aus folgendem Text oder URL: ${text}. 
-      Übersetze alles ins Deutsche falls nötig. 
+      contents: `Extrahiere alle Rezeptdetails aus folgendem Text oder URL: ${text}.
+      Übersetze alles ins Deutsche falls nötig.
       Antworte strikt im JSON Format.`,
       config: {
         responseMimeType: "application/json",
@@ -58,8 +79,8 @@ export const RecipeService = {
                 required: ["name", "amount", "unit"]
               }
             },
-            steps: { 
-              type: Type.ARRAY, 
+            steps: {
+              type: Type.ARRAY,
               items: {
                 type: Type.OBJECT,
                 properties: {
@@ -81,255 +102,140 @@ export const RecipeService = {
     }
   },
 
+  // --- Vorrat ---
+
   async getPantryItems(): Promise<PantryItem[]> {
-    const userId = auth.currentUser?.uid;
-    if (!userId) return [];
-    
-    try {
-      const q = query(
-        collection(db, PANTRY_COL),
-        where('userId', '==', userId)
-      );
-      const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PantryItem));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, PANTRY_COL);
-      return [];
-    }
+    return db.pantry.toArray();
+  },
+
+  listenToPantryItems(callback: (items: PantryItem[]) => void) {
+    return subscribe(() => db.pantry.orderBy('name').toArray(), callback);
+  },
+
+  async addPantryItem(item: Omit<PantryItem, 'id'>) {
+    const id = newId();
+    await db.pantry.add({ ...item, id, createdAt: Date.now() });
+    return id;
   },
 
   async deletePantryItem(id: string) {
-    try {
-      await deleteDoc(doc(db, PANTRY_COL, id));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `${PANTRY_COL}/${id}`);
-    }
+    await db.pantry.delete(id);
   },
 
-  async updatePantryItem(id: string, data: any) {
-    try {
-      await updateDoc(doc(db, PANTRY_COL, id), data);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `${PANTRY_COL}/${id}`);
-    }
+  async updatePantryItem(id: string, data: Partial<PantryItem>) {
+    await db.pantry.update(id, data);
   },
-  async getRecipes() {
-    const userId = auth.currentUser?.uid;
-    if (!userId) return [];
-    
-    try {
-      const q = query(
-        collection(db, RECIPES_COL),
-        where('userId', '==', userId),
-        orderBy('createdAt', 'desc')
-      );
-      const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Recipe));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, RECIPES_COL);
-      return [];
-    }
+
+  // --- Rezepte ---
+
+  async getRecipes(): Promise<Recipe[]> {
+    return db.recipes.orderBy('createdAt').reverse().toArray();
+  },
+
+  async getRecipe(id: string): Promise<Recipe | undefined> {
+    return db.recipes.get(id);
   },
 
   listenToRecipes(callback: (recipes: Recipe[]) => void) {
-    const userId = auth.currentUser?.uid;
-    if (!userId) return () => {};
-
-    const q = query(
-      collection(db, RECIPES_COL),
-      where('userId', '==', userId),
-      orderBy('createdAt', 'desc')
-    );
-
-    return onSnapshot(q, (snapshot) => {
-      const recipes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Recipe));
-      callback(recipes);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, RECIPES_COL);
-    });
+    return subscribe(() => this.getRecipes(), callback);
   },
 
   async addRecipe(recipe: Omit<Recipe, 'id' | 'userId' | 'createdAt'>) {
-    const userId = auth.currentUser?.uid;
-    if (!userId) return;
-    try {
-      // Sanitieren der Daten bevor sie an Firestore gesendet werden
-      const cleanData: any = {};
-      const allowedFields = [
-        'name', 'description', 'prepTime', 'calories', 
-        'nutritionalProtein', 'nutritionalCarbs', 'nutritionalFat', 
-        'type', 'method', 'ingredients', 'steps', 'images', 'status',
-        'rating', 'plannedDates', 'originalLink', 'difficulty', 'carbs'
-      ];
-
-      Object.entries(recipe).forEach(([key, value]) => {
-        if (allowedFields.includes(key) && value !== undefined && value !== null) {
-          if (['prepTime', 'calories', 'nutritionalProtein', 'nutritionalCarbs', 'nutritionalFat', 'rating'].includes(key)) {
-            cleanData[key] = Number(value) || 0;
-          } else if (Array.isArray(value)) {
-            // Arrays werden kopiert um sicherzustellen dass sie keine versteckten Props haben
-            cleanData[key] = [...value];
-          } else {
-            cleanData[key] = value;
-          }
-        }
-      });
-
-      return await addDoc(collection(db, RECIPES_COL), {
-        ...cleanData,
-        userId,
-        createdAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, RECIPES_COL);
-    }
+    const id = newId();
+    await db.recipes.add({
+      rating: 0, carbs: [], type: [], method: [], ingredients: [], images: [], plannedDates: [],
+      ...sanitizeRecipe(recipe),
+      id,
+      createdAt: Date.now(),
+    } as Recipe);
+    return id;
   },
 
   async updateRecipe(id: string, recipe: Partial<Recipe>) {
-    try {
-      const recipeRef = doc(db, RECIPES_COL, id);
-      
-      // Sanitieren der Daten bevor sie an Firestore gesendet werden
-      const cleanData: any = {};
-      const allowedFields = [
-        'name', 'description', 'prepTime', 'calories', 
-        'nutritionalProtein', 'nutritionalCarbs', 'nutritionalFat', 
-        'type', 'method', 'ingredients', 'steps', 'images', 'status',
-        'rating', 'plannedDates', 'originalLink', 'difficulty', 'carbs'
-      ];
-
-      Object.entries(recipe).forEach(([key, value]) => {
-        if (allowedFields.includes(key) && value !== undefined && value !== null) {
-          if (['prepTime', 'calories', 'nutritionalProtein', 'nutritionalCarbs', 'nutritionalFat', 'rating'].includes(key)) {
-            cleanData[key] = Number(value) || 0;
-          } else if (Array.isArray(value)) {
-            cleanData[key] = [...value];
-          } else {
-            cleanData[key] = value;
-          }
-        }
-      });
-
-      await updateDoc(recipeRef, {
-        ...cleanData,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `${RECIPES_COL}/${id}`);
-    }
-  },
-
-  async deleteRecipe(id: string) {
-    try {
-      await deleteDoc(doc(db, RECIPES_COL, id));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `${RECIPES_COL}/${id}`);
-    }
-  },
-
-  async getShoppingList() {
-    const userId = auth.currentUser?.uid;
-    if (!userId) return null;
-
-    try {
-      const docRef = doc(db, SHOPPING_LISTS_COL, userId);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        return docSnap.data() as ShoppingList;
-      }
-      return { userId, items: [], updatedAt: null };
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, `${SHOPPING_LISTS_COL}/${userId}`);
-      return null;
-    }
-  },
-
-  listenToShoppingList(callback: (list: ShoppingList) => void) {
-    const userId = auth.currentUser?.uid;
-    if (!userId) return () => {};
-
-    const docRef = doc(db, SHOPPING_LISTS_COL, userId);
-    return onSnapshot(docRef, (snapshot) => {
-      if (snapshot.exists()) {
-        callback(snapshot.data() as ShoppingList);
-      } else {
-        callback({ userId, items: [], updatedAt: null });
-      }
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `${SHOPPING_LISTS_COL}/${userId}`);
+    await db.recipes.update(id, {
+      ...sanitizeRecipe(recipe),
+      updatedAt: Date.now(),
     });
   },
 
+  async deleteRecipe(id: string) {
+    await db.recipes.delete(id);
+  },
+
+  // --- Einkaufsliste ---
+
+  async getShoppingList(): Promise<ShoppingList> {
+    return (await db.shoppingList.get(SHOPPING_LIST_ID)) || emptyShoppingList();
+  },
+
+  listenToShoppingList(callback: (list: ShoppingList) => void) {
+    return subscribe(() => this.getShoppingList(), callback);
+  },
+
   async updateShoppingList(items: ShoppingListItem[]) {
-    const userId = auth.currentUser?.uid;
-    if (!userId) return;
-
-    try {
-      const docRef = doc(db, SHOPPING_LISTS_COL, userId);
-      // Remove any undefined values from the items to prevent Firestore errors
-      const sanitizedItems = items.map(item => {
-        const cleaned: any = {};
-        Object.entries(item).forEach(([key, value]) => {
-          if (value !== undefined) {
-            cleaned[key] = value;
-          }
-        });
-        return cleaned;
+    // undefined-Werte entfernen, damit Export/Import sauber bleibt
+    const sanitizedItems = items.map(item => {
+      const cleaned: any = {};
+      Object.entries(item).forEach(([key, value]) => {
+        if (value !== undefined) {
+          cleaned[key] = value;
+        }
       });
+      return cleaned;
+    });
 
-      await setDoc(docRef, {
-        userId,
-        items: sanitizedItems,
-        updatedAt: serverTimestamp()
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `${SHOPPING_LISTS_COL}/${userId}`);
-    }
+    await db.shoppingList.put({
+      id: SHOPPING_LIST_ID,
+      items: sanitizedItems,
+      updatedAt: Date.now()
+    });
   },
 
   async addIngredientsToShoppingList(recipe: { id?: string, name: string, images?: string[], ingredients: { name: string, amount: string, unit: string }[] }, customMappings?: Record<string, any>) {
-    const userId = auth.currentUser?.uid;
-    if (!userId) return;
-
-    try {
-      const currentList = await this.getShoppingList();
-      const currentItems = currentList?.items || [];
-      
-      const newItems = [...currentItems];
-      recipe.ingredients.forEach(ing => {
-        const category = this.inferCategory(ing.name, customMappings);
-        newItems.push({ 
-          name: ing.name,
-          amount: ing.amount,
-          unit: ing.unit,
-          checked: false, 
-          recipeId: recipe.id, 
-          recipeName: recipe.name,
-          recipeImage: recipe.images?.[0],
-          category 
-        });
+    const currentList = await this.getShoppingList();
+    const newItems = [...currentList.items];
+    recipe.ingredients.forEach(ing => {
+      const category = this.inferCategory(ing.name, customMappings);
+      newItems.push({
+        name: ing.name,
+        amount: ing.amount,
+        unit: ing.unit,
+        checked: false,
+        recipeId: recipe.id,
+        recipeName: recipe.name,
+        recipeImage: recipe.images?.[0],
+        category
       });
+    });
 
-      await this.updateShoppingList(newItems);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `${SHOPPING_LISTS_COL}/${userId}`);
-    }
+    await this.updateShoppingList(newItems);
   },
 
-  async getIconMappings(): Promise<any[]> {
-    try {
-      const snapshot = await getDocs(collection(db, 'ingredientIcons'));
-      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, 'ingredientIcons');
-      return [];
-    }
+  // --- Zutaten-Icons ---
+
+  // "name" ist ein altes Feld aus früheren Versionen
+  async getIconMappings(): Promise<(IconMapping & { name?: string })[]> {
+    return db.ingredientIcons.toArray();
+  },
+
+  listenToIconMappings(callback: (mappings: IconMapping[]) => void) {
+    return subscribe(() => db.ingredientIcons.orderBy('keyword').toArray(), callback);
+  },
+
+  async addIconMapping(mapping: Omit<IconMapping, 'id'>) {
+    const id = newId();
+    await db.ingredientIcons.add({ ...mapping, id });
+    return id;
+  },
+
+  async deleteIconMapping(id: string) {
+    await db.ingredientIcons.delete(id);
   },
 
   inferCategory(name: string, customMappings?: Record<string, any>): string {
     const n = name.toLowerCase();
-    
-    // 1. Check custom mappings from Firestore first
+
+    // 1. Check custom mappings first
     if (customMappings) {
       for (const [keyword, mapping] of Object.entries(customMappings)) {
         if (keyword && n.includes(keyword.toLowerCase())) {
