@@ -17,15 +17,16 @@ npm run dev
 
 Danach <http://localhost:3000> öffnen.
 
-## Kostenlos online stellen
+## Online stellen (GitHub Pages)
 
-`npm run build` erzeugt im Ordner `dist/` eine rein statische Seite, die jeder Static-Hoster ausliefern kann.
-Für private GitHub-Repos eignen sich z. B.:
+Jeder Push auf `main` baut die App automatisch und veröffentlicht sie unter
+<https://ll-hilmer.github.io/Rezeptbuch/> (Workflow `.github/workflows/deploy.yml`).
 
-- **Cloudflare Pages** oder **Netlify**: Repository verbinden, Build-Befehl `npm run build`,
-  Ausgabeordner `dist`. Jeder Push auf `main` wird automatisch veröffentlicht.
-- **GitHub Pages** (bei privaten Repos nur mit kostenpflichtigem GitHub-Plan): beim Build
-  `BASE_PATH=/Rezeptbuch/` setzen, damit die Pfade stimmen.
+Einmalig einrichten: im Repository unter *Settings → Pages → Build and deployment* als **Source**
+„GitHub Actions“ auswählen.
+
+Alternativ kann der Ordner `dist/` aus `npm run build` bei jedem anderen Static-Hoster
+(Cloudflare Pages, Netlify …) liegen.
 
 Danach kann die Seite im Browser über „Zum Startbildschirm hinzufügen“ bzw. „App installieren“ installiert werden.
 
