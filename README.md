@@ -1,20 +1,49 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Rezeptbuch
 
-# Run and deploy your AI Studio app
+Rezeptverwaltung mit Wochenplaner, Einkaufsliste, Vorratsschrank und KI-Import.
 
-This contains everything you need to run your app locally.
+Die App speichert alle Daten **lokal im Browser** (IndexedDB). Es gibt keinen Server und keine
+Online-Datenbank, also auch keine Kosten oder Kontingente. Sie lässt sich als App auf
+Handy und PC installieren (PWA) und funktioniert offline.
 
-View your app in AI Studio: https://ai.studio/apps/978db81f-483d-4c13-bba3-ff211f34cc1c
+## Lokal starten
 
-## Run Locally
+Voraussetzung: [Node.js](https://nodejs.org) ab Version 20.
 
-**Prerequisites:**  Node.js
+```bash
+npm install
+npm run dev
+```
 
+Danach <http://localhost:3000> öffnen.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Online stellen (GitHub Pages)
+
+Jeder Push auf `main` baut die App automatisch und veröffentlicht sie unter
+<https://ll-hilmer.github.io/Rezeptbuch/> (Workflow `.github/workflows/deploy.yml`).
+
+Einmalig einrichten: im Repository unter *Settings → Pages → Build and deployment* als **Source**
+„GitHub Actions“ auswählen.
+
+Alternativ kann der Ordner `dist/` aus `npm run build` bei jedem anderen Static-Hoster
+(Cloudflare Pages, Netlify …) liegen.
+
+Danach kann die Seite im Browser über „Zum Startbildschirm hinzufügen“ bzw. „App installieren“ installiert werden.
+
+## Daten
+
+- **Speicherort:** Jeder Browser und jedes Gerät hat einen eigenen Datenbestand. Auch
+  `localhost` und die online gestellte Adresse gelten als getrennte Speicherorte.
+- **Backup:** Unter *Einstellungen → Backup* lässt sich alles (inklusive Bilder und Icons) als JSON-Datei
+  sichern und auf einem anderen Gerät wiederherstellen. Regelmäßige Backups werden empfohlen, da
+  Browserdaten beim Löschen des Verlaufs verloren gehen können.
+- **Übernahme aus der alten Firebase-Version:** *Einstellungen → Daten aus Firebase importieren*.
+  Nach einmaliger Google-Anmeldung werden Rezepte, Vorrat, Einkaufsliste und alle hinterlegten Zutaten-Icons
+  kopiert. Das funktioniert unter `localhost` sofort. Für eine online gestellte Adresse muss deren Domain zuerst in der
+  [Firebase-Konsole](https://console.firebase.google.com) unter *Authentication → Settings → Autorisierte Domains*
+  eingetragen werden. Alternativ lokal importieren und per Backup übertragen.
+
+## KI-Import
+
+Für den Import per Gemini wird ein eigener API-Key aus dem [Google AI Studio](https://aistudio.google.com/apikey)
+benötigt. Er wird unter *Einstellungen → KI-Import* eingetragen und nur auf dem jeweiligen Gerät gespeichert.

@@ -36,7 +36,7 @@ export interface Recipe {
   originalLink?: string;
   images: string[];
   plannedDates: string[];
-  userId: string;
+  userId?: string; // Nur noch aus der Firebase-Migration vorhanden
   calories?: number;
   nutritionalProtein?: number;
   nutritionalCarbs?: number;
@@ -44,8 +44,8 @@ export interface Recipe {
   difficulty?: 'Einfach' | 'Mittel' | 'Schwer';
   prepTime?: number; // Preparation time in minutes
   status?: 'Neu' | 'Ausprobieren' | 'Ausprobiert';
-  createdAt: any;
-  updatedAt?: any;
+  createdAt: number; // Millisekunden seit 1970
+  updatedAt?: number;
 }
 
 export interface PantryItem {
@@ -55,7 +55,8 @@ export interface PantryItem {
   unit: string;
   category?: string;
   expiryDate?: string;
-  userId: string;
+  createdAt?: number;
+  userId?: string; // Nur noch aus der Firebase-Migration vorhanden
 }
 
 export interface ShoppingListItem {
@@ -70,7 +71,15 @@ export interface ShoppingListItem {
 }
 
 export interface ShoppingList {
-  userId: string;
+  userId?: string; // Nur noch aus der Firebase-Migration vorhanden
   items: ShoppingListItem[];
-  updatedAt: any;
+  updatedAt: number | null;
+}
+
+export interface IconMapping {
+  id?: string;
+  keyword: string;
+  iconName?: string;
+  url?: string; // Eigenes Bild als Data-URL
+  category?: string;
 }

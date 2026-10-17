@@ -1,28 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { db, auth } from '../lib/firebase';
-import { collection, query, where, onSnapshot, addDoc, deleteDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { Plus, Trash2, Package, Search, ChevronRight, Calendar, AlertCircle, Settings, Tag, Clock, Flame, Star, Sparkles, Filter, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { getIngredientIcon, AVAILABLE_ICON_NAMES, useIngredientIcons } from '../lib/ingredient-icons';
+import { getIngredientIcon, AVAILABLE_ICON_NAMES, useIngredientIcons, useIconMappingList } from '../lib/ingredient-icons';
 import { RecipeService } from '../services/RecipeService';
-import { handleFirestoreError, OperationType } from '../lib/firestore-errors';
 import { Recipe, PantryItem } from '../types';
 import RecipeDetail from './RecipeDetail';
 import { differenceInDays, parseISO, isPast } from 'date-fns';
 
 
-interface IconMapping {
-  id: string;
-  keyword: string;
-  iconName: string;
-  category?: string;
-  url?: string;
-}
-
 export default function PantryView() {
   const mappingsObj = useIngredientIcons();
   const [items, setItems] = useState<PantryItem[]>([]);
-  const [mappings, setMappings] = useState<IconMapping[]>([]);
+  const mappings = useIconMappingList();
   const [loading, setLoading] = useState(true);
   const [newItem, setNewItem] = useState({ name: '', amount: '', unit: '', expiryDate: '' });
   const [search, setSearch] = useState('');
@@ -89,30 +78,16 @@ export default function PantryView() {
   };
 
   useEffect(() => {
-    if (!auth.currentUser) return;
-
     const recipesUnsub = RecipeService.listenToRecipes(setRecipes);
 
-    const qItems = query(
-      collection(db, 'pantry'),
-      where('userId', '==', auth.currentUser.uid)
-    );
-
-    const unsubItems = onSnapshot(qItems, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PantryItem));
-      setItems(data.sort((a, b) => a.name.localeCompare(b.name)));
+    const unsubItems = RecipeService.listenToPantryItems((data) => {
+      setItems([...data].sort((a, b) => a.name.localeCompare(b.name)));
       setLoading(false);
-    });
-
-    const unsubIcons = onSnapshot(collection(db, 'ingredientIcons'), (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as IconMapping));
-      setMappings(data.sort((a, b) => a.keyword.localeCompare(b.keyword)));
     });
 
     return () => { 
       recipesUnsub();
       unsubItems(); 
-      unsubIcons(); 
     };
   }, []);
 
@@ -158,7 +133,7 @@ export default function PantryView() {
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newItem.name || !auth.currentUser) return;
+    if (!newItem.name) return;
 
     try {
       const sanitizedItem = {
@@ -167,14 +142,12 @@ export default function PantryView() {
         unit: newItem.unit || '',
         expiryDate: newItem.expiryDate || '',
         category: RecipeService.inferCategory(newItem.name, mappingsObj),
-        userId: auth.currentUser.uid,
-        createdAt: serverTimestamp()
       };
 
-      await addDoc(collection(db, 'pantry'), sanitizedItem);
+      await RecipeService.addPantryItem(sanitizedItem);
       setNewItem({ name: '', amount: '', unit: '', expiryDate: '' });
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'pantry');
+      console.error('Vorrat konnte nicht gespeichert werden:', err);
     }
   };
 
@@ -189,18 +162,22 @@ export default function PantryView() {
         url: newMapping.url || '',
         category: newMapping.category || ''
       };
-      await addDoc(collection(db, 'ingredientIcons'), sanitizedMapping);
+      await RecipeService.addIconMapping(sanitizedMapping);
       setNewMapping({ keyword: '', iconName: AVAILABLE_ICON_NAMES[0], url: '', category: '' });
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'ingredientIcons');
+      console.error('Icon konnte nicht gespeichert werden:', err);
     }
   };
 
-  const handleDelete = async (id: string, collectionName: string) => {
+  const handleDelete = async (id: string, collectionName: 'pantry' | 'ingredientIcons') => {
     try {
-      await deleteDoc(doc(db, collectionName, id));
+      if (collectionName === 'pantry') {
+        await RecipeService.deletePantryItem(id);
+      } else {
+        await RecipeService.deleteIconMapping(id);
+      }
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `${collectionName}/${id}`);
+      console.error('Löschen fehlgeschlagen:', err);
     }
   };
 
@@ -709,7 +686,7 @@ export default function PantryView() {
                     <button 
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleDelete(map.id, 'ingredientIcons');
+                        handleDelete(map.id!, 'ingredientIcons');
                       }} 
                       className="p-4 text-red-500 opacity-100 md:opacity-0 group-hover:opacity-100 hover:bg-red-50 rounded-full transition-all shrink-0 z-30 relative ml-2 focus:ring-2 focus:ring-red-200 outline-none"
                       aria-label={`Mapping für ${map.keyword} löschen`}

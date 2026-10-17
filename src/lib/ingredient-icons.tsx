@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { 
   Wheat, Leaf, Fish, Beef, Egg, Milk, Apple, 
   Citrus, Carrot, Soup, Wine, Coffee, Flame, Droplets, Utensils,
   Disc, Wind, Cloud
 } from 'lucide-react';
-import { db } from './firebase';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { RecipeService } from '../services/RecipeService';
+import { IconMapping } from '../types';
 
 const staticIcons: Record<string, React.ReactNode> = {
   'Wheat': <Wheat className="w-full h-full" />,
@@ -26,17 +26,12 @@ const staticIcons: Record<string, React.ReactNode> = {
   'Disc': <Disc className="w-full h-full" />
 };
 
-export interface IconMapping {
-  keyword: string;
-  iconName?: string;
-  url?: string;
-  category?: string;
-}
+export type { IconMapping };
 
 export const getIngredientIcon = (name: string, customMappings?: Record<string, IconMapping>) => {
   const n = name.toLowerCase();
   
-  // 1. Check custom mappings from Firestore
+  // 1. Check custom mappings
   if (customMappings) {
     for (const [keyword, mapping] of Object.entries(customMappings)) {
       if (n.includes(keyword.toLowerCase())) {
@@ -72,26 +67,32 @@ export const getIngredientIcon = (name: string, customMappings?: Record<string, 
   return staticIcons['Utensils'];
 };
 
-export const useIngredientIcons = () => {
-  const [mappings, setMappings] = useState<Record<string, IconMapping>>({});
+interface IngredientIconsContextValue {
+  list: IconMapping[];
+  byKeyword: Record<string, IconMapping>;
+}
 
-  useEffect(() => {
-    return onSnapshot(collection(db, 'ingredientIcons'), (snapshot) => {
-      const newMappings: Record<string, IconMapping> = {};
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        newMappings[data.keyword] = {
-          keyword: data.keyword,
-          iconName: data.iconName,
-          url: data.url,
-          category: data.category
-        };
-      });
-      setMappings(newMappings);
+const IngredientIconsContext = createContext<IngredientIconsContextValue>({ list: [], byKeyword: {} });
+
+// Lädt die Icon-Zuordnungen einmal für die ganze App (statt einmal pro Rezeptkarte).
+export function IngredientIconsProvider({ children }: { children: React.ReactNode }) {
+  const [list, setList] = useState<IconMapping[]>([]);
+
+  useEffect(() => RecipeService.listenToIconMappings(setList), []);
+
+  const value = useMemo(() => {
+    const byKeyword: Record<string, IconMapping> = {};
+    list.forEach(m => {
+      if (m.keyword) byKeyword[m.keyword] = m;
     });
-  }, []);
+    return { list, byKeyword };
+  }, [list]);
 
-  return mappings;
-};
+  return <IngredientIconsContext.Provider value={value}>{children}</IngredientIconsContext.Provider>;
+}
+
+export const useIngredientIcons = () => useContext(IngredientIconsContext).byKeyword;
+
+export const useIconMappingList = () => useContext(IngredientIconsContext).list;
 
 export const AVAILABLE_ICON_NAMES = Object.keys(staticIcons);
