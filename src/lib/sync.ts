@@ -3,24 +3,27 @@ import { getFirebase, getCurrentUser, signInWithGoogle, signOutFirebase } from '
 
 /*
  * Synchronisierung über Firestore – auf möglichst wenige Zugriffe ausgelegt:
- * - Alle Daten liegen in EINER Sammlung users/{uid}/items. Ein Abgleich ist eine einzige
- *   Abfrage "alles seit dem letzten Abgleich" – ohne Änderungen kostet das 1 Lesezugriff.
- * - Keine Live-Verbindung: abgeglichen wird beim Start, beim Zurückkehren in die App
- *   und kurz nach lokalen Änderungen.
- * - Hochgeladen werden nur geänderte Einträge.
- * - Große Bilder werden als eigene Dokumente (Schlüssel = Inhalts-Hash) nur einmal hochgeladen.
- *   Ändert sich nur der Text eines Rezepts, wird das Bild nicht erneut übertragen.
+ * - Alle Einträge liegen in EINER Sammlung users/{uid}/items. Ein Abgleich ist eine einzige
+ *   Abfrage "alles seit dem letzten Abgleich" (mit Index auf syncedAt nur die Änderungen).
+ * - Bilder liegen getrennt in users/{uid}/images und werden nur bei Bedarf einzeln geladen.
+ *   So bleiben die Dokumente in items klein – wichtig für die Enterprise-Edition, die ohne
+ *   Index die ganze Sammlung durchsucht und nach gelesener Datenmenge abrechnet.
+ * - Keine Live-Verbindung: abgerufen wird beim Start, beim Zurückkehren in die App und auf
+ *   Knopfdruck; lokale Änderungen werden kurz danach hochgeladen.
+ * - Ist das Tageskontingent aufgebraucht, pausiert der automatische Abgleich.
  * Bei Konflikten gewinnt die zuletzt gemachte Änderung.
  */
 
 const K_ENABLED = 'syncEnabled';
 const K_LAST_PULL = 'syncLastPull';
 const K_LAST_SYNC = 'syncLastSyncAt';
+const K_IMAGES_MOVED = 'syncImagesMoved';
 
 const PAGE_SIZE = 25;
-const FOCUS_INTERVAL_MS = 2 * 60 * 1000;
+const FOCUS_INTERVAL_MS = 5 * 60 * 1000;
 const CHANGE_DELAY_MS = 4000;
-const IMAGE_INLINE_LIMIT = 30_000; // Kleinere Bilder (z. B. Icons) bleiben im Dokument
+const QUOTA_PAUSE_MS = 60 * 60 * 1000;
+const IMAGE_INLINE_LIMIT = 2_000; // Nur winzige Bilder bleiben im Dokument
 const MAX_DOC_CHARS = 950_000; // Firestore erlaubt max. 1 MiB pro Dokument
 const MAX_BATCH_CHARS = 8_000_000; // Firestore erlaubt max. 10 MiB pro Schreibvorgang
 const IMAGE_REF = 'syncimg:';
@@ -42,9 +45,11 @@ export interface SyncStatus {
   running: boolean;
   lastSyncAt: number | null;
   error: string | null;
+  lastResult: { received: number; pushed: number } | null;
 }
 
-let status: SyncStatus = { enabled: false, email: null, running: false, lastSyncAt: null, error: null };
+let status: SyncStatus = { enabled: false, email: null, running: false, lastSyncAt: null, error: null, lastResult: null };
+let pausedUntil = 0;
 const statusListeners = new Set<(s: SyncStatus) => void>();
 
 function setStatus(update: Partial<SyncStatus>) {
@@ -188,7 +193,7 @@ async function pull(uid: string) {
     const snap = await fs.getDocs(fs.query(items, ...constraints));
     for (const d of snap.docs) {
       const item = d.data() as RemoteItem;
-      changes.push(item);
+      if (item.table !== 'image') changes.push(item); // Bilder lagen früher ebenfalls hier
       // Timestamp.valueOf() liefert einen sortierbaren String
       if (item.syncedAt && item.syncedAt.valueOf() > maxSyncedAt.valueOf()) maxSyncedAt = item.syncedAt as any;
     }
@@ -202,15 +207,9 @@ async function pull(uid: string) {
 }
 
 async function applyRemote(uid: string, changes: RemoteItem[]) {
-  // 1. Bilder zwischenspeichern
-  const newImages = changes.filter(c => c.table === 'image' && !c.deleted && c.data?.dataUrl);
-  if (newImages.length) {
-    await db.syncImages.bulkPut(newImages.map(c => ({ hash: c.id, dataUrl: c.data!.dataUrl })));
-  }
-
   const records = changes.filter(c => (SYNCED_TABLES as readonly string[]).includes(c.table));
 
-  // 2. Bildverweise auflösen; fehlende Bilder einzeln nachladen
+  // 1. Bildverweise auflösen; unbekannte Bilder einzeln nachladen (einmal pro Gerät)
   const refs = new Set<string>();
   records.forEach(c => collectImageRefs(c.data, refs));
   const images = new Map<string, string>();
@@ -221,17 +220,23 @@ async function applyRemote(uid: string, changes: RemoteItem[]) {
     if (missing.length) {
       const { firestore, firestoreModule: fs } = await getFirebase();
       for (const hash of missing) {
-        const snap = await fs.getDoc(fs.doc(firestore, 'users', uid, 'items', `image:${hash}`));
-        const dataUrl = snap.exists() ? (snap.data() as RemoteItem).data?.dataUrl : undefined;
+        let snap = await fs.getDoc(fs.doc(firestore, 'users', uid, 'images', hash));
+        let dataUrl = snap.exists() ? snap.data().dataUrl : undefined;
+        if (!dataUrl) {
+          // Früherer Speicherort
+          snap = await fs.getDoc(fs.doc(firestore, 'users', uid, 'items', `image:${hash}`));
+          dataUrl = snap.exists() ? (snap.data() as RemoteItem).data?.dataUrl : undefined;
+        }
         if (dataUrl) {
           images.set(hash, dataUrl);
           await db.syncImages.put({ hash, dataUrl });
+          await db.cloudImages.put({ hash });
         }
       }
     }
   }
 
-  // 3. Änderungen übernehmen – neuere lokale, noch nicht hochgeladene Änderungen gewinnen
+  // 2. Änderungen übernehmen – neuere lokale, noch nicht hochgeladene Änderungen gewinnen
   await db.transaction('rw', [...SYNCED_TABLES.map(t => db.table(t)), db.deletions], async () => {
     for (const change of records) {
       const table = db.table(change.table);
@@ -245,6 +250,16 @@ async function applyRemote(uid: string, changes: RemoteItem[]) {
       if (localPending && local!._base !== undefined && change.mtime <= local!._base) continue;
 
       const pendingMtime = tombstone ? tombstone._mtime : localPending ? (local!._mtime ?? 0) : -1;
+
+      // Fehlt ein Bild in der Cloud, lieber den lokalen Stand behalten als das Bild zu verlieren
+      if (local && !change.deleted) {
+        const recordRefs = new Set<string>();
+        collectImageRefs(change.data, recordRefs);
+        if ([...recordRefs].some(h => !images.has(h))) {
+          console.warn('[Sync] Bild fehlt in der Cloud, lokaler Stand bleibt erhalten:', key);
+          continue;
+        }
+      }
 
       // Einkaufsliste wurde auf zwei Geräten gleichzeitig geändert: zusammenführen statt überschreiben
       if (change.table === 'shoppingList' && localPending && !change.deleted) {
@@ -293,19 +308,19 @@ function mergeShoppingItems(winner: any[], loser: any[]) {
 }
 
 async function push(uid: string) {
+  await moveLegacyImages(uid);
   const dirty: { table: SyncedTable; record: any }[] = [];
   for (const table of SYNCED_TABLES) {
     const all = await db.table(table).toArray();
     all.filter((r: SyncMeta) => r._dirty !== 0).forEach(record => dirty.push({ table, record }));
   }
   const tombstones = await db.deletions.toArray();
+  const { firestore, firestoreModule: fs } = await getFirebase();
   if (!dirty.length && !tombstones.length) return { pushed: 0, skipped: [] as string[] };
 
-  const { firestore, firestoreModule: fs } = await getFirebase();
   const docRef = (id: string) => fs.doc(firestore, 'users', uid, 'items', id);
 
   type Op = { id: string; item: RemoteItem; size: number };
-  const imageOps: Op[] = [];
   const recordOps: Op[] = [];
   const skipped: string[] = [];
   const allImages = new Map<string, string>();
@@ -325,15 +340,14 @@ async function push(uid: string) {
   }
 
   // Bilder, die schon in der Cloud liegen, nicht erneut hochladen
-  const uploaded = await db.syncImages.bulkGet([...allImages.keys()]);
+  const uploaded = await db.cloudImages.bulkGet([...allImages.keys()]);
   const uploadedSet = new Set(uploaded.filter(Boolean).map(img => img!.hash));
-  for (const [hash, dataUrl] of allImages) {
-    if (uploadedSet.has(hash)) continue;
-    const small = await shrinkDataUrl(dataUrl, MAX_DOC_CHARS);
-    imageOps.push({ id: `image:${hash}`, item: { table: 'image', id: hash, mtime: Date.now(), deleted: false, data: { dataUrl: small } }, size: small.length });
-  }
+  const newImages = [...allImages].filter(([hash]) => !uploadedSet.has(hash));
 
-  // In Paketen schreiben – Bilder zuerst, damit Rezepte nie auf fehlende Bilder verweisen
+  // Bilder zuerst hochladen, damit Einträge nie auf fehlende Bilder verweisen
+  await uploadImages(uid, newImages);
+
+  // In Paketen schreiben
   const commit = async (ops: Op[]) => {
     let batch = fs.writeBatch(firestore);
     let count = 0, chars = 0;
@@ -348,10 +362,6 @@ async function push(uid: string) {
     }
     if (count) await batch.commit();
   };
-  await commit(imageOps);
-  if (imageOps.length) {
-    await db.syncImages.bulkPut(imageOps.map(op => ({ hash: op.item.id, dataUrl: allImages.get(op.item.id)! })));
-  }
   await commit(recordOps);
 
   // Als hochgeladen markieren – außer der Eintrag wurde inzwischen erneut geändert
@@ -374,11 +384,79 @@ async function push(uid: string) {
   return { pushed: recordOps.length, skipped };
 }
 
+async function uploadImages(uid: string, images: [string, string][]) {
+  if (!images.length) return;
+  const { firestore, firestoreModule: fs } = await getFirebase();
+  let batch = fs.writeBatch(firestore);
+  let count = 0, chars = 0;
+  const done: string[] = [];
+  const flush = async () => {
+    if (!count) return;
+    await batch.commit();
+    await db.cloudImages.bulkPut(done.splice(0).map(hash => ({ hash })));
+    batch = fs.writeBatch(firestore);
+    count = 0; chars = 0;
+  };
+  for (const [hash, dataUrl] of images) {
+    const small = await shrinkDataUrl(dataUrl, MAX_DOC_CHARS);
+    if (count && (count >= 400 || chars + small.length > MAX_BATCH_CHARS)) await flush();
+    batch.set(fs.doc(firestore, 'users', uid, 'images', hash), { dataUrl: small });
+    done.push(hash);
+    count++; chars += small.length;
+  }
+  await flush();
+  await db.syncImages.bulkPut(images.map(([hash, dataUrl]) => ({ hash, dataUrl })));
+}
+
+// Einmalig pro Gerät: Bilder der früheren Version aus items nach images verschieben, damit die
+// Abgleichsabfrage sie nicht mehr mitliest
+async function moveLegacyImages(uid: string) {
+  if (await getSetting<boolean>(K_IMAGES_MOVED)) return;
+  const { firestore, firestoreModule: fs } = await getFirebase();
+  const cached = await db.syncImages.toArray();
+
+  // Hat ein anderes Gerät die Bilder schon verschoben, reicht ein kleiner Lesezugriff
+  const meta = fs.doc(firestore, 'users', uid, 'meta', 'state');
+  const metaSnap = await fs.getDoc(meta);
+  if (metaSnap.exists() && metaSnap.data().imagesMoved) {
+    await db.cloudImages.bulkPut(cached.map(i => ({ hash: i.hash })));
+    await setSetting(K_IMAGES_MOVED, true);
+    return;
+  }
+
+  const uploaded = new Set((await db.cloudImages.toArray()).map(i => i.hash));
+  await uploadImages(uid, cached.filter(i => !uploaded.has(i.hash)).map(i => [i.hash, i.dataUrl]));
+
+  // Einträge, in denen noch mittelgroße Bilder stecken (z. B. Icons), neu hochladen,
+  // damit diese Bilder ebenfalls ausgelagert werden
+  for (const table of SYNCED_TABLES) {
+    await db.table(table).toCollection().modify((record: any) => {
+      const found = new Map<string, string>();
+      extractImages(record, found);
+      if (found.size) {
+        record._dirty = 1;
+        record._mtime = Date.now();
+      }
+    });
+  }
+  await fs.setDoc(meta, { imagesMoved: true }, { merge: true });
+
+  for (let i = 0; i < cached.length; i += 400) {
+    const batch = fs.writeBatch(firestore);
+    cached.slice(i, i + 400).forEach(img => batch.delete(fs.doc(firestore, 'users', uid, 'items', `image:${img.hash}`)));
+    await batch.commit();
+  }
+  await setSetting(K_IMAGES_MOVED, true);
+}
+
 let running: Promise<void> | null = null;
 let rerun = false;
 
-export async function syncNow(): Promise<void> {
+// manual: vom Nutzer ausgelöst (ignoriert die Pause bei aufgebrauchtem Kontingent)
+// pullRemote: false = nur hochladen (z. B. direkt nach einer lokalen Änderung)
+export async function syncNow({ manual = false, pullRemote = true } = {}): Promise<void> {
   if (!status.enabled) return;
+  if (!manual && Date.now() < pausedUntil) return;
   if (running) {
     rerun = true;
     return running;
@@ -393,19 +471,25 @@ export async function syncNow(): Promise<void> {
       }
       do {
         rerun = false;
-        const received = await pull(user.uid);
+        // Die Einkaufsliste wird bei gleichzeitigen Änderungen zusammengeführt – dafür muss
+        // vor dem Hochladen der aktuelle Stand abgerufen werden
+        const listPending = (await db.shoppingList.toArray()).some(l => l._dirty !== 0);
+        const received = pullRemote || listPending ? await pull(user.uid) : 0;
         const { pushed, skipped } = await push(user.uid);
         console.debug(`[Sync] ${received} empfangen, ${pushed} gesendet`);
         const lastSyncAt = Date.now();
         await setSetting(K_LAST_SYNC, lastSyncAt);
+        pausedUntil = 0;
         setStatus({
           lastSyncAt,
           email: user.email,
+          lastResult: { received, pushed },
           error: skipped.length ? `Zu groß für die Synchronisierung: ${skipped.join(', ')}` : null,
         });
       } while (rerun);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Synchronisierung fehlgeschlagen:', err);
+      if (err?.code === 'resource-exhausted') pausedUntil = Date.now() + QUOTA_PAUSE_MS;
       setStatus({ error: describeError(err) });
     } finally {
       setStatus({ running: false });
@@ -422,7 +506,7 @@ export function scheduleSync(delay = CHANGE_DELAY_MS) {
   if (timer) clearTimeout(timer);
   timer = setTimeout(() => {
     timer = null;
-    syncNow();
+    syncNow({ pullRemote: false });
   }, delay);
 }
 
@@ -432,7 +516,7 @@ export async function enableSync() {
     await setSetting(K_ENABLED, true);
     await setSetting(K_LAST_PULL, null);
     setStatus({ enabled: true, email: user.email, error: null });
-    await syncNow();
+    await syncNow({ manual: true });
   } catch (err) {
     setStatus({ error: describeError(err) });
   }
@@ -461,7 +545,7 @@ export async function initSync() {
       if (timer) {
         clearTimeout(timer);
         timer = null;
-        syncNow();
+        syncNow({ pullRemote: false });
       }
     } else if (!status.lastSyncAt || Date.now() - status.lastSyncAt > FOCUS_INTERVAL_MS) {
       syncNow();

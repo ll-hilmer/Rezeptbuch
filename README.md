@@ -50,23 +50,29 @@ Unter *Einstellungen → Synchronisierung* mit dem Google-Konto anmelden, auf je
 Danach werden Änderungen automatisch abgeglichen: beim Öffnen, beim Zurückwechseln in die App und
 wenige Sekunden nach dem Bearbeiten.
 
-**Einmalig nötig:** die Firestore-Regeln aus [`firestore.rules`](firestore.rules) veröffentlichen.
-In der [Firebase-Konsole](https://console.firebase.google.com) *Firestore Database* öffnen, oben die
-Datenbank `ai-studio-…` auswählen, dann im Reiter *Regeln* den Inhalt vollständig ersetzen und
-*Veröffentlichen* klicken. Ohne diesen Schritt meldet die App „Zugriff verweigert“.
+**Einmalig in der [Firebase-Konsole](https://console.firebase.google.com) einrichten**
+(*Firestore Database*, oben die Datenbank `ai-studio-978db81f-…` auswählen):
 
-So bleibt der Verbrauch im kostenlosen Firebase-Tarif (50.000 Lese- und 20.000 Schreibzugriffe pro Tag) gering:
+1. **Regeln:** Im Reiter *Sicherheit* bzw. *Regeln* den Inhalt vollständig durch
+   [`firestore.rules`](firestore.rules) ersetzen und *Veröffentlichen*. Ohne diesen Schritt
+   meldet die App „Zugriff verweigert“.
+2. **Index:** Im Reiter *Indexe* einen Index anlegen: Sammlung `items`, Feld `syncedAt`
+   aufsteigend, Bereich *Sammlung*. Die AI-Studio-Datenbank ist eine Enterprise-Edition. Dort
+   werden keine Indexe automatisch erstellt, und ohne Index durchsucht jede Abfrage die ganze
+   Sammlung. Abgerechnet wird nach gelesener Datenmenge.
 
-- Alle Daten liegen in einer Sammlung `users/{uid}/items`. Ein Abgleich ist eine einzige Abfrage
-  „alles seit dem letzten Abgleich“. Ohne Änderungen kostet das **einen** Lesezugriff.
-- Es gibt keine dauerhafte Live-Verbindung. Hochgeladen werden nur geänderte Einträge.
-- Fotos liegen als eigene Dokumente und werden pro Bild nur einmal übertragen, auch wenn sie in
-  Rezept und Einkaufsliste vorkommen oder der Rezepttext geändert wird.
-- Konflikte: Die zuletzt gemachte Änderung gewinnt. Die Einkaufsliste wird bei gleichzeitigen
-  Änderungen zusammengeführt, damit keine Einträge verloren gehen.
+So bleibt der Verbrauch gering:
 
-Der erste Abgleich überträgt alles einmal, bei 40 Rezepten einige hundert Zugriffe. Danach bleibt es
-im normalen Gebrauch bei wenigen Dutzend Zugriffen pro Tag.
+- Alle Einträge liegen in einer Sammlung `users/{uid}/items`. Ein Abruf ist eine einzige Abfrage
+  „alles seit dem letzten Abgleich“. Mit Index werden nur die Änderungen gelesen.
+- Bilder liegen getrennt in `users/{uid}/images` und werden pro Gerät nur einmal geladen. Die
+  Abgleichsabfrage liest dadurch nur kleine Textdokumente, auch ohne Index.
+- Eigene Änderungen werden nur hochgeladen, ohne gleichzeitig abzurufen (außer bei der
+  Einkaufsliste, die bei gleichzeitigen Änderungen zusammengeführt wird). Neues von anderen
+  Geräten wird beim Öffnen, beim Zurückwechseln in die App (höchstens alle 5 Minuten) und mit
+  „Jetzt abgleichen“ abgerufen.
+- Ist das Tageskontingent aufgebraucht, pausiert der automatische Abgleich für eine Stunde.
+- Konflikte: Die zuletzt gemachte Änderung gewinnt.
 
 ## KI-Import
 
