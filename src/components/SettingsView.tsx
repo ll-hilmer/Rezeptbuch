@@ -1,8 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { KeyRound, Download, Upload, CloudDownload, HardDrive, Check, Loader2 } from 'lucide-react';
+import { KeyRound, Download, Upload, CloudDownload, HardDrive, Check, Loader2, RefreshCw, LogOut } from 'lucide-react';
 import { getSetting, setSetting, requestPersistentStorage } from '../lib/db';
 import { downloadBackup, importBackupFile, importFromFirebase, ImportSummary } from '../lib/backup';
 import { GEMINI_KEY_SETTING } from '../services/RecipeService';
+import { getFirebase } from '../lib/firebase-client';
+import { enableSync, disableSync, syncNow, getSyncStatus, subscribeSyncStatus } from '../lib/sync';
+
+function formatTime(ms: number) {
+  return new Date(ms).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
+}
 
 function describe(summary: ImportSummary) {
   return `${summary.recipes} Rezepte, ${summary.pantry} Vorratseinträge, ${summary.ingredientIcons} Icons und ${summary.shoppingItems} Einträge der Einkaufsliste übernommen.`;
@@ -16,6 +22,13 @@ export default function SettingsView() {
   const [persisted, setPersisted] = useState<boolean | null>(null);
   const [usage, setUsage] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [sync, setSync] = useState(getSyncStatus());
+
+  useEffect(() => subscribeSyncStatus(setSync), []);
+
+  // Firebase vorladen, damit das Google-Anmeldefenster direkt nach dem Tippen öffnet
+  // (sonst blockieren manche Browser, v. a. Safari, das Pop-up)
+  useEffect(() => { getFirebase().catch(() => {}); }, []);
 
   useEffect(() => {
     getSetting<string>(GEMINI_KEY_SETTING).then(k => setApiKey(k || ''));
@@ -67,10 +80,42 @@ export default function SettingsView() {
       )}
 
       <section className={card}>
+        <h3 className="flex items-center gap-2 font-bold text-natural-primary"><RefreshCw className="w-5 h-5" /> Synchronisierung</h3>
+        <p className="text-sm opacity-70">
+          Gleicht deine Daten über dein Google-Konto zwischen allen Geräten ab, z. B. PC und Tablet. Die App bleibt offline nutzbar.
+          Übertragen werden nur Änderungen: beim Öffnen, beim Zurückwechseln in die App und kurz nach dem Bearbeiten.
+        </p>
+        {sync.enabled ? (
+          <>
+            <p className="text-sm">
+              Angemeldet{sync.email ? <> als <strong>{sync.email}</strong></> : null} · Letzter Abgleich:{' '}
+              <strong>{sync.running ? 'läuft …' : sync.lastSyncAt ? formatTime(sync.lastSyncAt) : 'noch nie'}</strong>
+            </p>
+            {sync.error && <p className="text-sm rounded-2xl px-4 py-3 bg-red-100 text-red-800">{sync.error}</p>}
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button className={button} disabled={sync.running} onClick={() => syncNow()}>
+                {sync.running ? spinner : <RefreshCw className="w-4 h-4" />} Jetzt abgleichen
+              </button>
+              <button className={secondaryButton} disabled={sync.running} onClick={() => disableSync()}>
+                <LogOut className="w-4 h-4" /> Synchronisierung beenden
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            {sync.error && <p className="text-sm rounded-2xl px-4 py-3 bg-red-100 text-red-800">{sync.error}</p>}
+            <button className={button} disabled={sync.running} onClick={() => enableSync()}>
+              {sync.running ? spinner : <RefreshCw className="w-4 h-4" />} Mit Google anmelden und aktivieren
+            </button>
+          </>
+        )}
+      </section>
+
+      <section className={card}>
         <h3 className="flex items-center gap-2 font-bold text-natural-primary"><HardDrive className="w-5 h-5" /> Speicherort</h3>
         <p className="text-sm opacity-70">
-          Alle Rezepte, Bilder und Listen werden nur auf diesem Gerät im Browser gespeichert. Es fallen keine Datenbankkosten an,
-          und die App funktioniert auch offline. Andere Geräte oder Browser haben einen eigenen Datenbestand – übertrage ihn mit einem Backup.
+          Alle Rezepte, Bilder und Listen liegen auf diesem Gerät im Browser, die App funktioniert deshalb auch offline.
+          Ohne Synchronisierung hat jedes Gerät und jeder Browser einen eigenen Datenbestand.
         </p>
         <p className="text-sm">
           Belegter Speicher: <strong>{usage ?? 'unbekannt'}</strong> · Dauerhafter Speicher:{' '}
