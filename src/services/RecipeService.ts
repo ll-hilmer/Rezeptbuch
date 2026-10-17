@@ -1,5 +1,5 @@
 import { liveQuery } from 'dexie';
-import { db, newId, getSetting, SHOPPING_LIST_ID } from '../lib/db';
+import { db, newId, getSetting, stamp, deleteSynced, SHOPPING_LIST_ID } from '../lib/db';
 import { Recipe, ShoppingList, ShoppingListItem, PantryItem, IconMapping } from '../types';
 
 export const GEMINI_KEY_SETTING = 'geminiApiKey';
@@ -114,16 +114,16 @@ export const RecipeService = {
 
   async addPantryItem(item: Omit<PantryItem, 'id'>) {
     const id = newId();
-    await db.pantry.add({ ...item, id, createdAt: Date.now() });
+    await db.pantry.add(stamp({ ...item, id, createdAt: Date.now() }));
     return id;
   },
 
   async deletePantryItem(id: string) {
-    await db.pantry.delete(id);
+    await deleteSynced('pantry', id);
   },
 
   async updatePantryItem(id: string, data: Partial<PantryItem>) {
-    await db.pantry.update(id, data);
+    await db.pantry.update(id, stamp(data));
   },
 
   // --- Rezepte ---
@@ -142,24 +142,24 @@ export const RecipeService = {
 
   async addRecipe(recipe: Omit<Recipe, 'id' | 'userId' | 'createdAt'>) {
     const id = newId();
-    await db.recipes.add({
+    await db.recipes.add(stamp({
       rating: 0, carbs: [], type: [], method: [], ingredients: [], images: [], plannedDates: [],
       ...sanitizeRecipe(recipe),
       id,
       createdAt: Date.now(),
-    } as Recipe);
+    } as Recipe));
     return id;
   },
 
   async updateRecipe(id: string, recipe: Partial<Recipe>) {
-    await db.recipes.update(id, {
+    await db.recipes.update(id, stamp({
       ...sanitizeRecipe(recipe),
       updatedAt: Date.now(),
-    });
+    }) as Partial<Recipe>);
   },
 
   async deleteRecipe(id: string) {
-    await db.recipes.delete(id);
+    await deleteSynced('recipes', id);
   },
 
   // --- Einkaufsliste ---
@@ -184,11 +184,14 @@ export const RecipeService = {
       return cleaned;
     });
 
-    await db.shoppingList.put({
+    // Den zuletzt synchronisierten Stand behalten, damit Konflikte richtig erkannt werden
+    const existing = await db.shoppingList.get(SHOPPING_LIST_ID);
+    await db.shoppingList.put(stamp({
       id: SHOPPING_LIST_ID,
       items: sanitizedItems,
-      updatedAt: Date.now()
-    });
+      updatedAt: Date.now(),
+      _base: existing?._base,
+    }));
   },
 
   async addIngredientsToShoppingList(recipe: { id?: string, name: string, images?: string[], ingredients: { name: string, amount: string, unit: string }[] }, customMappings?: Record<string, any>) {
@@ -224,12 +227,12 @@ export const RecipeService = {
 
   async addIconMapping(mapping: Omit<IconMapping, 'id'>) {
     const id = newId();
-    await db.ingredientIcons.add({ ...mapping, id });
+    await db.ingredientIcons.add(stamp({ ...mapping, id }));
     return id;
   },
 
   async deleteIconMapping(id: string) {
-    await db.ingredientIcons.delete(id);
+    await deleteSynced('ingredientIcons', id);
   },
 
   inferCategory(name: string, customMappings?: Record<string, any>): string {

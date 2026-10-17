@@ -1,4 +1,5 @@
-import { db, SHOPPING_LIST_ID } from './db';
+import { db, stamp, stripSyncMeta, getSetting, SHOPPING_LIST_ID } from './db';
+import { getFirebase, signInWithGoogle, signOutFirebase } from './firebase-client';
 import { Recipe, PantryItem, ShoppingList, IconMapping } from '../types';
 
 const BACKUP_FORMAT = 'rezeptbuch-backup';
@@ -32,10 +33,10 @@ export async function createBackup(): Promise<BackupData> {
     format: BACKUP_FORMAT,
     version: BACKUP_VERSION,
     exportedAt: new Date().toISOString(),
-    recipes,
-    pantry,
+    recipes: recipes.map(stripSyncMeta),
+    pantry: pantry.map(stripSyncMeta),
     shoppingList: shoppingList ? { items: shoppingList.items, updatedAt: shoppingList.updatedAt } : null,
-    ingredientIcons,
+    ingredientIcons: ingredientIcons.map(stripSyncMeta),
   };
 }
 
@@ -51,14 +52,15 @@ export async function downloadBackup() {
 }
 
 // Schreibt Daten in die lokale Datenbank. Einträge mit gleicher ID werden überschrieben,
-// ein erneuter Import erzeugt also keine Duplikate.
+// ein erneuter Import erzeugt also keine Duplikate. Die Einträge gelten als geändert und
+// werden bei aktiver Synchronisierung hochgeladen.
 async function writeData(data: Omit<BackupData, 'format' | 'version' | 'exportedAt'>): Promise<ImportSummary> {
   await db.transaction('rw', [db.recipes, db.pantry, db.shoppingList, db.ingredientIcons], async () => {
-    await db.recipes.bulkPut(data.recipes);
-    await db.pantry.bulkPut(data.pantry);
-    await db.ingredientIcons.bulkPut(data.ingredientIcons);
+    await db.recipes.bulkPut(data.recipes.map(r => stamp(r)));
+    await db.pantry.bulkPut(data.pantry.map(p => stamp(p)));
+    await db.ingredientIcons.bulkPut(data.ingredientIcons.map(i => stamp(i)));
     if (data.shoppingList) {
-      await db.shoppingList.put({ ...data.shoppingList, id: SHOPPING_LIST_ID });
+      await db.shoppingList.put(stamp({ ...data.shoppingList, id: SHOPPING_LIST_ID }));
     }
   });
   return {
@@ -104,20 +106,9 @@ function normalize(value: any): any {
 }
 
 // Einmalige Übernahme der Daten aus der alten Firebase-Datenbank (AI Studio).
-// Firebase wird nur hier – und erst bei Bedarf – geladen.
 export async function importFromFirebase(): Promise<ImportSummary> {
-  const [{ initializeApp, getApps }, authModule, firestore, configModule] = await Promise.all([
-    import('firebase/app'),
-    import('firebase/auth'),
-    import('firebase/firestore'),
-    import('../../firebase-applet-config.json'),
-  ]);
-  const config = configModule.default;
-  const app = getApps()[0] || initializeApp(config);
-  const auth = authModule.getAuth(app);
-  const fs = firestore.getFirestore(app, config.firestoreDatabaseId);
-
-  const { user } = await authModule.signInWithPopup(auth, new authModule.GoogleAuthProvider());
+  const { firestore: fs, firestoreModule: firestore } = await getFirebase();
+  const user = await signInWithGoogle();
 
   try {
     const byUser = (name: string) =>
@@ -144,6 +135,7 @@ export async function importFromFirebase(): Promise<ImportSummary> {
 
     return await writeData({ recipes, pantry, shoppingList, ingredientIcons });
   } finally {
-    await authModule.signOut(auth);
+    // Angemeldet bleiben, wenn die Synchronisierung dieselbe Anmeldung nutzt
+    if (!(await getSetting<boolean>('syncEnabled'))) await signOutFirebase();
   }
 }
