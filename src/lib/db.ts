@@ -27,7 +27,7 @@ export interface Deletion {
   _mtime: number;
 }
 
-// Bilder, die bereits in der Cloud liegen (Schlüssel = Inhalts-Hash)
+// Zwischenspeicher für Bilder aus der Cloud (Schlüssel = Inhalts-Hash)
 export interface SyncImage {
   hash: string;
   dataUrl: string;
@@ -45,6 +45,7 @@ class RezeptbuchDB extends Dexie {
   settings!: Table<Setting, string>;
   deletions!: Table<Deletion, string>;
   syncImages!: Table<SyncImage, string>;
+  cloudImages!: Table<{ hash: string }, string>;
 
   constructor() {
     super('rezeptbuch');
@@ -58,6 +59,10 @@ class RezeptbuchDB extends Dexie {
     this.version(2).stores({
       deletions: 'key',
       syncImages: 'hash',
+    });
+    // Bilder, die bereits in users/{uid}/images liegen
+    this.version(3).stores({
+      cloudImages: 'hash',
     });
   }
 }

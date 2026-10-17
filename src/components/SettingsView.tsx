@@ -83,17 +83,21 @@ export default function SettingsView() {
         <h3 className="flex items-center gap-2 font-bold text-natural-primary"><RefreshCw className="w-5 h-5" /> Synchronisierung</h3>
         <p className="text-sm opacity-70">
           Gleicht deine Daten über dein Google-Konto zwischen allen Geräten ab, z. B. PC und Tablet. Die App bleibt offline nutzbar.
-          Übertragen werden nur Änderungen: beim Öffnen, beim Zurückwechseln in die App und kurz nach dem Bearbeiten.
+          Eigene Änderungen werden kurz nach dem Bearbeiten hochgeladen. Neues von anderen Geräten wird beim Öffnen,
+          beim Zurückwechseln in die App (höchstens alle 5 Minuten) und mit „Jetzt abgleichen“ abgerufen.
         </p>
         {sync.enabled ? (
           <>
             <p className="text-sm">
               Angemeldet{sync.email ? <> als <strong>{sync.email}</strong></> : null} · Letzter Abgleich:{' '}
               <strong>{sync.running ? 'läuft …' : sync.lastSyncAt ? formatTime(sync.lastSyncAt) : 'noch nie'}</strong>
+              {sync.lastResult && !sync.running && (
+                <> · {sync.lastResult.received} empfangen, {sync.lastResult.pushed} gesendet</>
+              )}
             </p>
             {sync.error && <p className="text-sm rounded-2xl px-4 py-3 bg-red-100 text-red-800">{sync.error}</p>}
             <div className="flex flex-col sm:flex-row gap-3">
-              <button className={button} disabled={sync.running} onClick={() => syncNow()}>
+              <button className={button} disabled={sync.running} onClick={() => syncNow({ manual: true })}>
                 {sync.running ? spinner : <RefreshCw className="w-4 h-4" />} Jetzt abgleichen
               </button>
               <button className={secondaryButton} disabled={sync.running} onClick={() => disableSync()}>
